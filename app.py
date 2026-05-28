@@ -3,7 +3,7 @@ import time
 import streamlit as st
 from openai import AzureOpenAI
 
-# Page
+# Page config
 st.set_page_config(page_title="AI Assistant", page_icon="🤖", layout="centered")
 st.title("🤖 AI Assistant")
 st.caption("Upload files and ask anything!")
@@ -28,7 +28,7 @@ def create_assistant():
 
 assistant = create_assistant()
 
-# Session state
+# Session state init
 if "thread_id" not in st.session_state:
     thread = client.beta.threads.create()
     st.session_state.thread_id = thread.id
@@ -40,7 +40,57 @@ if "file_id_to_name" not in st.session_state:
     st.session_state.file_id_to_name = {}
 
 if "uploaded_file_ids" not in st.session_state:
-    st.session_state.uploaded_file_ids = []  # list of currently active file IDs
+    st.session_state.uploaded_file_ids = []
+
+if "file_summaries" not in st.session_state:
+    st.session_state.file_summaries = {}  # file_id → summary text
+
+# Helper: get summary for a file
+def get_file_summary(file_id, filename):
+    """Ask the assistant to summarize a newly uploaded file."""
+    temp_thread = client.beta.threads.create()
+    client.beta.threads.messages.create(
+        thread_id=temp_thread.id,
+        role="user",
+        content="Please summarize the contents of this file in 3-5 sentences.",
+        attachments=[{
+            "file_id": file_id,
+            "tools": [{"type": "file_search"}]
+        }]
+    )
+    run = client.beta.threads.runs.create(
+        thread_id=temp_thread.id,
+        assistant_id=assistant.id
+    )
+    while run.status in ['queued', 'in_progress', 'cancelling']:
+        time.sleep(1)
+        run = client.beta.threads.runs.retrieve(
+            thread_id=temp_thread.id,
+            run_id=run.id
+        )
+    if run.status == 'completed':
+        messages = client.beta.threads.messages.list(thread_id=temp_thread.id)
+        return messages.data[0].content[0].text.value
+    return "Summary unavailable."
+
+# Helper: parse citations
+def parse_citations(message_obj):
+    text_block = message_obj.content[0].text
+    raw_text = text_block.value
+    annotations = text_block.annotations
+
+    citations = []
+    seen = {}
+    for i, annotation in enumerate(annotations):
+        raw_text = raw_text.replace(annotation.text, f" `[{i+1}]`")
+        if hasattr(annotation, "file_citation"):
+            cited_file_id = annotation.file_citation.file_id
+            filename = st.session_state.file_id_to_name.get(cited_file_id, cited_file_id)
+            if filename not in seen:
+                seen[filename] = i + 1
+                citations.append(f"[{i+1}] 📄 {filename}")
+
+    return raw_text, citations
 
 # Sidebar: file upload
 with st.sidebar:
@@ -64,6 +114,15 @@ with st.sidebar:
                     st.session_state[file_key] = response.id
                     st.session_state.file_id_to_name[response.id] = uploaded_file.name
                     st.success(f"✅ Uploaded: {uploaded_file.name}")
+
+                # Generate summary right after upload
+                with st.spinner(f"Summarizing {uploaded_file.name}..."):
+                    summary = get_file_summary(
+                        st.session_state[file_key],
+                        uploaded_file.name
+                    )
+                    st.session_state.file_summaries[st.session_state[file_key]] = summary
+
             else:
                 st.info(f"✅ {uploaded_file.name}")
 
@@ -75,38 +134,24 @@ with st.sidebar:
         st.session_state.uploaded_file_ids = []
         st.info("You can also ask questions without a file.")
 
-    # Show active files summary
+    # Show active files + summaries
     if st.session_state.uploaded_file_ids:
         st.divider()
         st.markdown(f"**{len(st.session_state.uploaded_file_ids)} file(s) active:**")
         for fid in st.session_state.uploaded_file_ids:
             fname = st.session_state.file_id_to_name.get(fid, fid)
-            st.markdown(f"- 📄 {fname}")
+            summary = st.session_state.file_summaries.get(fid)
+            with st.expander(f"📄 {fname}"):
+                if summary:
+                    st.markdown(summary)
+                else:
+                    st.markdown("No summary available.")
 
     st.divider()
     if st.button("🔄 New Conversation"):
         st.session_state.thread_id = client.beta.threads.create().id
         st.session_state.messages = []
         st.rerun()
-
-# Parse citations
-def parse_citations(message_obj):
-    text_block = message_obj.content[0].text
-    raw_text = text_block.value
-    annotations = text_block.annotations
-
-    citations = []
-    seen = {}  # avoid duplicate citations from same file
-    for i, annotation in enumerate(annotations):
-        raw_text = raw_text.replace(annotation.text, f" `[{i+1}]`")
-        if hasattr(annotation, "file_citation"):
-            cited_file_id = annotation.file_citation.file_id
-            filename = st.session_state.file_id_to_name.get(cited_file_id, cited_file_id)
-            if filename not in seen:
-                seen[filename] = i + 1
-                citations.append(f"[{i+1}] 📄 {filename}")
-
-    return raw_text, citations
 
 # Display chat history
 for msg in st.session_state.messages:
@@ -130,7 +175,6 @@ if prompt := st.chat_input("Type your question here..."):
     with st.chat_message("assistant"):
         with st.spinner("Thinking..."):
 
-            # Attach all active files
             attachments = [
                 {
                     "file_id": fid,
