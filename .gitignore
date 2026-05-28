@@ -1,0 +1,31 @@
+# Streamlit secrets
+.streamlit/secrets.toml
+
+# Python
+.venv/
+.venv-2/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+
+# Output files
+*.png
+*.jpg
+*.jpeg
+
+# Environment
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
