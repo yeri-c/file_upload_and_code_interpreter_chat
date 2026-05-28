@@ -6,7 +6,7 @@ from openai import AzureOpenAI
 # Page
 st.set_page_config(page_title="AI Assistant", page_icon="🤖", layout="centered")
 st.title("🤖 AI Assistant")
-st.caption("Upload a file and ask anything!")
+st.caption("Upload files and ask anything!")
 
 # Client setup
 client = AzureOpenAI(
@@ -36,43 +36,52 @@ if "thread_id" not in st.session_state:
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-if "current_file_id" not in st.session_state:
-    st.session_state.current_file_id = None
-
 if "file_id_to_name" not in st.session_state:
     st.session_state.file_id_to_name = {}
+
+if "uploaded_file_ids" not in st.session_state:
+    st.session_state.uploaded_file_ids = []  # list of currently active file IDs
 
 # Sidebar: file upload
 with st.sidebar:
     st.header("📎 File Upload")
-    uploaded_file = st.file_uploader(
-        "Upload a file to chat with",
+    uploaded_files = st.file_uploader(
+        "Upload one or more files",
         type=["pdf", "txt", "docx", "csv", "png", "jpg", "jpeg"],
+        accept_multiple_files=True
     )
 
-    if uploaded_file:
-        file_key = f"uploaded_{uploaded_file.name}"
-        if file_key not in st.session_state:
-            with st.spinner("Uploading file..."):
-                response = client.files.create(
-                    file=(uploaded_file.name, uploaded_file.getvalue()),
-                    purpose="assistants"
-                )
-                st.session_state[file_key] = response.id
-                st.session_state.current_file_id = response.id
-                st.session_state.file_id_to_name[response.id] = uploaded_file.name
-                st.success(f"✅ Uploaded: {uploaded_file.name}")
-        else:
-            st.session_state.current_file_id = st.session_state[file_key]
-            st.info(f"✅ {uploaded_file.name}")
+    if uploaded_files:
+        current_file_ids = []
+        for uploaded_file in uploaded_files:
+            file_key = f"uploaded_{uploaded_file.name}"
+            if file_key not in st.session_state:
+                with st.spinner(f"Uploading {uploaded_file.name}..."):
+                    response = client.files.create(
+                        file=(uploaded_file.name, uploaded_file.getvalue()),
+                        purpose="assistants"
+                    )
+                    st.session_state[file_key] = response.id
+                    st.session_state.file_id_to_name[response.id] = uploaded_file.name
+                    st.success(f"✅ Uploaded: {uploaded_file.name}")
+            else:
+                st.info(f"✅ {uploaded_file.name}")
 
-        if st.button("🗑️ Remove File"):
-            st.session_state.current_file_id = None
-            del st.session_state[file_key]
-            st.rerun()
+            current_file_ids.append(st.session_state[file_key])
+
+        st.session_state.uploaded_file_ids = current_file_ids
+
     else:
-        st.session_state.current_file_id = None
+        st.session_state.uploaded_file_ids = []
         st.info("You can also ask questions without a file.")
+
+    # Show active files summary
+    if st.session_state.uploaded_file_ids:
+        st.divider()
+        st.markdown(f"**{len(st.session_state.uploaded_file_ids)} file(s) active:**")
+        for fid in st.session_state.uploaded_file_ids:
+            fname = st.session_state.file_id_to_name.get(fid, fid)
+            st.markdown(f"- 📄 {fname}")
 
     st.divider()
     if st.button("🔄 New Conversation"):
@@ -80,19 +89,22 @@ with st.sidebar:
         st.session_state.messages = []
         st.rerun()
 
-# Parse citations from response
+# Parse citations
 def parse_citations(message_obj):
     text_block = message_obj.content[0].text
     raw_text = text_block.value
     annotations = text_block.annotations
 
     citations = []
+    seen = {}  # avoid duplicate citations from same file
     for i, annotation in enumerate(annotations):
         raw_text = raw_text.replace(annotation.text, f" `[{i+1}]`")
         if hasattr(annotation, "file_citation"):
             cited_file_id = annotation.file_citation.file_id
             filename = st.session_state.file_id_to_name.get(cited_file_id, cited_file_id)
-            citations.append(f"[{i+1}] 📄 {filename}")
+            if filename not in seen:
+                seen[filename] = i + 1
+                citations.append(f"[{i+1}] 📄 {filename}")
 
     return raw_text, citations
 
@@ -118,12 +130,14 @@ if prompt := st.chat_input("Type your question here..."):
     with st.chat_message("assistant"):
         with st.spinner("Thinking..."):
 
-            attachments = []
-            if st.session_state.current_file_id:
-                attachments = [{
-                    "file_id": st.session_state.current_file_id,
+            # Attach all active files
+            attachments = [
+                {
+                    "file_id": fid,
                     "tools": [{"type": "file_search"}, {"type": "code_interpreter"}]
-                }]
+                }
+                for fid in st.session_state.uploaded_file_ids
+            ]
 
             client.beta.threads.messages.create(
                 thread_id=st.session_state.thread_id,
@@ -154,18 +168,15 @@ if prompt := st.chat_input("Type your question here..."):
                     if block.type == "text":
                         cleaned_text, citations = parse_citations(response_msg)
                         st.markdown(cleaned_text)
-
                         if citations:
                             with st.expander("📚 Sources"):
                                 for c in citations:
                                     st.markdown(c)
-
                         st.session_state.messages.append({
                             "role": "assistant", "type": "text",
                             "content": cleaned_text,
                             "citations": citations
                         })
-
                     elif block.type == "image_file":
                         image_bytes = client.files.content(block.image_file.file_id).read()
                         st.image(image_bytes)
