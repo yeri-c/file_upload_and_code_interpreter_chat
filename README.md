@@ -10,7 +10,8 @@ Upload files and ask questions about them, or just chat freely.
 ## Features
 
 - 💬 Chat with an AI assistant
-- 📎 Upload files (PDF, TXT, DOCX, CSV, PNG, JPG) and ask questions about them
+- 📎 Upload multiple files (PDF, TXT, DOCX, CSV, PNG, JPG) at once
+- 🗂️ Automatic file summary on upload
 - 📚 Citations showing which file the answer came from
 - 🖼️ Supports image output (charts, graphs) via Code Interpreter
 - 🔄 Start a new conversation anytime
